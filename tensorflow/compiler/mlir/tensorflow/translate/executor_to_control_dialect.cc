@@ -14,7 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 // This transformation pass transforms from TF executor dialect to MLIR TF
-// contol dialect.
+// control dialect.
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Sequence.h"
@@ -199,7 +199,8 @@ void ExecutorToControlDialectConversion::runOnFunction() {
   graph.erase();
 }
 
-std::unique_ptr<FunctionPassBase> CreateTFExecutorToControlDialectConversion() {
+std::unique_ptr<OpPassBase<FuncOp>>
+CreateTFExecutorToControlDialectConversion() {
   return std::make_unique<ExecutorToControlDialectConversion>();
 }
 

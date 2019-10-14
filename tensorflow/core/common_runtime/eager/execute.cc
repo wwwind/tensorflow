@@ -40,6 +40,7 @@ limitations under the License.
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/logging.h"
 #include "tensorflow/core/framework/node_def_util.h"
+#include "tensorflow/core/framework/tensor_reference.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/profiler/lib/traceme.h"
@@ -285,10 +286,10 @@ Status SelectDevice(EagerOperation* op, const NodeDef& ndef, EagerContext* ctx,
     }
   }
 
-  VLOG(1) << "Placer place op [" << op->Name()
-          << "] on device: " << final_devices[0]->name();
-  VLOG(4) << "Available kernels for " << op->Name() << "are "
-          << KernelsRegisteredForOp(op->Name());
+  DVLOG(1) << "Placer place op [" << op->Name()
+           << "] on device: " << final_devices[0]->name();
+  DVLOG(4) << "Available kernels for " << op->Name() << "are "
+           << KernelsRegisteredForOp(op->Name());
   op->SetDevice(final_devices[0]);
   *device = final_devices[0];
   return Status::OK();
@@ -361,6 +362,7 @@ Status GetDeviceForInput(const EagerContext* ctx, TensorHandle* tensor_handle,
     // Use the resource's actual device because it is the device that will
     // influence partitioning the multi-device function.
     const Tensor* tensor;
+    // TODO(fishx): Avoid blocking here.
     TF_RETURN_IF_ERROR(tensor_handle->Tensor(&tensor));
     const ResourceHandle& handle = tensor->flat<ResourceHandle>()(0);
     device_name = handle.device();
@@ -407,9 +409,9 @@ Status ShouldCompileWithXLA(const EagerOperation* op, const EagerContext* ctx,
   // Does node have an explicit request to compile or not?
   Status status = op->Attrs().Get(kXlaCompileAttr, compile_with_xla);
   if (status.ok()) {
-    VLOG(2) << "Caller explicitly requested "
-            << (*compile_with_xla ? "" : "not ")
-            << "to compile with XLA: " << op->DebugString();
+    DVLOG(2) << "Caller explicitly requested "
+             << (*compile_with_xla ? "" : "not ")
+             << "to compile with XLA: " << op->DebugString();
     return Status::OK();
   }
 
@@ -423,8 +425,8 @@ Status ShouldCompileWithXLA(const EagerOperation* op, const EagerContext* ctx,
   status = GetNodeAttr(AttrSlice(&function_def->attr()), kXlaCompileAttr,
                        compile_with_xla);
   if (status.ok()) {
-    VLOG(2) << "Function definition explicitly specifies "
-            << (*compile_with_xla ? "" : "not ") << "to compile with XLA";
+    DVLOG(2) << "Function definition explicitly specifies "
+             << (*compile_with_xla ? "" : "not ") << "to compile with XLA";
     return Status::OK();
   }
 
@@ -432,9 +434,9 @@ Status ShouldCompileWithXLA(const EagerOperation* op, const EagerContext* ctx,
   if (op->GetDeviceName().type == "TPU" ||
       op->GetDeviceName().type == "XLA_GPU" ||
       op->GetDeviceName().type == "XLA_CPU") {
-    VLOG(2) << "Compiling " << op->Name()
-            << " with XLA because it is running on an XLA device "
-            << op->GetDeviceName().type;
+    DVLOG(2) << "Compiling " << op->Name()
+             << " with XLA because it is running on an XLA device "
+             << op->GetDeviceName().type;
     *compile_with_xla = true;
   } else {
     *compile_with_xla = false;
@@ -459,6 +461,7 @@ Status ShouldCompileWithXLA(const EagerOperation* op, const EagerContext* ctx,
 //    running without an explicitly requested device.
 Status EagerLocalExecute(EagerOperation* op, TensorHandle** retvals,
                          int* num_retvals) {
+  MEMDEBUG_CACHE_OP(op->op_name());
   profiler::TraceMe activity(
       [&] { return absl::StrCat("EagerLocalExecute: ", op->Name()); },
       profiler::TraceMeLevel::kInfo);
@@ -481,7 +484,7 @@ Status EagerLocalExecute(EagerOperation* op, TensorHandle** retvals,
                                profiler::TraceMeLevel::kInfo);
     input_dev_ptrs.reserve(op->Inputs().size());
     // All inputs need to be on local devices.
-    // TODO(b/122851476): This is a limitation of the current code base (but
+    // TODO(b/134094971): This is a limitation of the current code base (but
     // should be possible to get around).
     // Code changes will need to be made to pass input objects to the
     // function library runtime instead of just "Tensor"s.
@@ -536,8 +539,8 @@ Status EagerLocalExecute(EagerOperation* op, TensorHandle** retvals,
 
   core::RefCountPtr<KernelAndDevice> kernel = ctx->GetCachedKernel(cache_key);
   if (kernel == nullptr) {
-    VLOG(2) << "Creating new kernel for " << op->Name() << " on device "
-            << DeviceNameOrUnspecified(op->Device());
+    DVLOG(2) << "Creating new kernel for " << op->Name() << " on device "
+             << DeviceNameOrUnspecified(op->Device());
     bool compile_with_xla;
     TF_RETURN_IF_ERROR(ShouldCompileWithXLA(op, ctx, &compile_with_xla));
     if (compile_with_xla) {
@@ -582,9 +585,9 @@ Status EagerLocalExecute(EagerOperation* op, TensorHandle** retvals,
       // function will likely result in collisions. However, this also means
       // that we don't support legitimate sending/receiving across function
       // boundary.
-      VLOG(2) << "Running " << ndef.op() << " using multi-device function. "
-              << "compile_with_xla=" << compile_with_xla
-              << ". Full node_def=" << ndef.DebugString();
+      DVLOG(2) << "Running " << ndef.op() << " using multi-device function. "
+               << "compile_with_xla=" << compile_with_xla
+               << ". Full node_def=" << ndef.DebugString();
       kernel.reset(new KernelAndDeviceFunc(
           flr, ctx->pflr(), std::move(input_dev_ptrs),
           std::move(input_resource_variable_dtypes_and_shapes), runner,
@@ -593,9 +596,9 @@ Status EagerLocalExecute(EagerOperation* op, TensorHandle** retvals,
             return ctx->CreateRendezvous(step_id);
           }));
     } else {
-      VLOG(2) << "Running " << ndef.op() << " using op kernel. "
-              << "compile_with_xla=" << compile_with_xla
-              << ". Full node_def=" << ndef.DebugString();
+      DVLOG(2) << "Running " << ndef.op() << " using op kernel. "
+               << "compile_with_xla=" << compile_with_xla
+               << ". Full node_def=" << ndef.DebugString();
       kernel.reset(new KernelAndDeviceOp(ctx->GetRendezvous(), ctx->LogMemory(),
                                          flr, runner,
                                          ctx->GetCollectiveExecutorHandle(),
@@ -616,7 +619,6 @@ Status EagerLocalExecute(EagerOperation* op, TensorHandle** retvals,
   *num_retvals = num_outputs;
   TF_RETURN_IF_ERROR(ValidateInputTypeAndPlacement(ctx, op, kernel));
 
-  StepStats* maybe_step_stats = nullptr;
   GraphCollector* graph_collector = nullptr;
   if (ctx->ShouldStoreGraphs()) {
     graph_collector = ctx->GetGraphCollector();
@@ -630,15 +632,14 @@ Status EagerLocalExecute(EagerOperation* op, TensorHandle** retvals,
         output_dtypes[i], ctx, &retvals[i]));
   }
 
-  std::unique_ptr<EagerNode> node(
-      new ExecuteNode(ctx, op->Inputs(), std::move(kernel), nullptr,
-                      maybe_step_stats, graph_collector, output_dtypes,
-                      op->GetCancellationManager(), {retvals, num_outputs}));
+  std::unique_ptr<EagerNode> node(new ExecuteNode(
+      ctx, op->Inputs(), std::move(kernel), graph_collector, output_dtypes,
+      op->GetCancellationManager(), {retvals, num_outputs}));
   // Note that for async mode, execution order will make sure that all
   // input handles are ready before executing them.
   // TODO(b/137118203): Consider executing "cheap" kernels inline for
   // performance.
-  Status s = executor.Async() ? executor.Add(std::move(node)) : node->Run();
+  Status s = executor.AddOrExecute(std::move(node));
   // Since the operation failed, we need to Unref any outputs that were
   // allocated.
   if (!s.ok()) {
@@ -657,7 +658,7 @@ void PrepareRemoteOp(eager::Operation* remote_op, EagerOperation* op) {
   remote_op->set_id(ctx->RemoteMgr()->NextOpId());
   remote_op->set_name(op->Name());
 
-  op->Attrs().FillAttrValueMap(remote_op->mutable_attrs());
+  op->Attrs().FillAttrValueMapWithoutDefaults(remote_op->mutable_attrs());
   remote_op->set_device(op->Device()->name());
 }
 
@@ -677,6 +678,12 @@ Status EagerRemoteExecute(EagerOperation* op, TensorHandle** retvals,
   eager::EagerClient* eager_client = nullptr;
   uint64 context_id = ctx->GetContextId();
   TF_RETURN_IF_ERROR(ctx->GetClient(op->GetDeviceName(), &eager_client));
+  string remote_task;
+  if (!DeviceNameUtils::GetTaskName(op->GetDeviceName(), &remote_task)) {
+    return errors::InvalidArgument(
+        "Unable to find remote task corresponding to device ",
+        op->Device()->name());
+  }
 
   std::unique_ptr<eager::EnqueueRequest> request(new eager::EnqueueRequest);
   request->set_context_id(context_id);
@@ -751,7 +758,7 @@ Status EagerRemoteExecute(EagerOperation* op, TensorHandle** retvals,
     // to copy this tensor to this process, the remote end will know the
     // correct device of this handle.
     Status status = TensorHandle::CreateUnshapedRemoteHandle(
-        id, i, eager_client, context_id, output_dtypes[i], op_device, ctx,
+        id, i, remote_task, context_id, output_dtypes[i], op_device, ctx,
         &retvals[i]);
     if (!status.ok()) {
       for (int j = 0; j < i; ++j) {
@@ -764,14 +771,14 @@ Status EagerRemoteExecute(EagerOperation* op, TensorHandle** retvals,
   }
 
   auto& executor = op->Executor();
-  bool is_async = executor.Async();
-  VLOG(4) << "Execute remote eager op: " << op->Name()
-          << " (is async?: " << is_async << ").";
+  DVLOG(4) << "Execute remote eager op: " << op->Name()
+           << " (is async?: " << executor.Async() << ").";
 
-  std::unique_ptr<EagerNode> node(
-      new eager::RemoteExecuteNode(std::move(request), op_device, eager_client,
-                                   op->Inputs(), {retvals, num_outputs}));
-  Status s = is_async ? executor.Add(std::move(node)) : node->Run();
+  std::unique_ptr<EagerNode> node(new eager::RemoteExecuteNode(
+      std::move(request), op_device, eager_client,
+      op->MutableAttrs()->BuildNodeDef(), op->EagerContext()->FuncLibDef(),
+      op->Inputs(), {retvals, num_outputs}));
+  Status s = executor.AddOrExecute(std::move(node));
   // Since the operation failed, we need to Unref any outputs that were
   // allocated.
   if (!s.ok()) {
@@ -830,20 +837,20 @@ Status MaybeUpdateOpDevice(EagerOperation* op) {
     TensorHandle* tensor_handle = op->Inputs()[i];
     if (tensor_handle->dtype == DT_RESOURCE) {
       Device* resource_device = tensor_handle->resource_device();
-      VLOG(2) << "for op " << op->Name() << " input " << i << " "
-              << DataTypeString(tensor_handle->dtype)
-              << " input device = " << resource_device->name()
-              << ", op device = " << op_device->name();
+      DVLOG(2) << "for op " << op->Name() << " input " << i << " "
+               << DataTypeString(tensor_handle->dtype)
+               << " input device = " << resource_device->name()
+               << ", op device = " << op_device->name();
       // We check for `op->Device() == nullptr` because it can be later
       // interpreted as unspecified device and a different device can
       // be selected based on device priority. If any input to an op
       // is a resource we must pin it to prevent different device selection.
       // TODO(iga): null device can mean "unspecified" or "CPU". Clean this up.
       if (resource_device != op_device || op->Device() == nullptr) {
-        VLOG(1) << (resource_device != op_device ? "Changing " : "Setting ")
-                << "device of operation " << op->Name() << " to "
-                << resource_device->name() << " because input #" << i
-                << " is a resource in this device.";
+        DVLOG(1) << (resource_device != op_device ? "Changing " : "Setting ")
+                 << "device of operation " << op->Name() << " to "
+                 << resource_device->name() << " because input #" << i
+                 << " is a resource in this device.";
         op->SetDevice(resource_device);
       }
       all_inputs_eligible_for_cpu_pinning = false;
@@ -853,10 +860,10 @@ Status MaybeUpdateOpDevice(EagerOperation* op) {
       break;
     } else if (all_inputs_eligible_for_cpu_pinning) {
       Device* input_device = tensor_handle->DeviceOrHostCPU(ctx);
-      VLOG(2) << "for op " << op->Name() << " input " << i << " "
-              << DataTypeString(tensor_handle->dtype)
-              << " input device = " << input_device->name()
-              << ", op device = " << op_device->name();
+      DVLOG(2) << "for op " << op->Name() << " input " << i << " "
+               << DataTypeString(tensor_handle->dtype)
+               << " input device = " << input_device->name()
+               << ", op device = " << op_device->name();
 
       // Input is on CPU.
       if (input_device != ctx->HostCPU()) {
@@ -884,9 +891,9 @@ Status MaybeUpdateOpDevice(EagerOperation* op) {
   // TODO(nareshmodi): Is it possible there is no int32/int64 CPU kernel for
   // an op, but there is a GPU kernel?
   if (!op->Inputs().empty() && all_inputs_eligible_for_cpu_pinning) {
-    VLOG(1) << "Forcing op " << op->Name()
-            << " to be on the CPU since all input tensors have an "
-               "int32/int64 dtype, and are small (less than 64 elements).";
+    DVLOG(1) << "Forcing op " << op->Name()
+             << " to be on the CPU since all input tensors have an "
+                "int32/int64 dtype, and are small (less than 64 elements).";
     op->SetDevice(ctx->HostCPU());
   }
 
@@ -902,6 +909,12 @@ Status EagerExecute(EagerOperation* op, TensorHandle** retvals,
   TF_RETURN_IF_ERROR(MaybeUpdateOpDevice(op));
 
   bool op_is_local = op->EagerContext()->IsLocalDeviceName(op->GetDeviceName());
+
+  if (!op->Executor().Async()) {
+    // In sync mode, always clear error to maintain the same behavior as before.
+    // TODO(b/141004939): Remove this.
+    op->Executor().ClearError();
+  }
 
   std::unique_ptr<tensorflow::EagerOperation> out_op;
   TF_RETURN_IF_ERROR(EagerOpRewriteRegistry::Global()->RunRewrite(
@@ -938,8 +951,6 @@ Status EagerExecute(EagerOperation* op, TensorHandle** retvals,
 Status EagerKernelExecute(EagerContext* ctx,
                           const gtl::InlinedVector<TensorHandle*, 4>& op_inputs,
                           const core::RefCountPtr<KernelAndDevice>& kernel,
-                          NodeExecStats* maybe_stats,
-                          StepStats* maybe_step_stats,
                           GraphCollector* graph_collector,
                           CancellationManager* cancellation_manager,
                           absl::Span<TensorHandle*> retvals) {
@@ -952,18 +963,25 @@ Status EagerKernelExecute(EagerContext* ctx,
   // overwritten during kernel execution. The reference count is incremented
   // below when we insert a copy of the Tensor into protected_tensors, and will
   // be decremented once execution is complete.
-  std::vector<tensorflow::Tensor> protected_tensors;
+  int first_index_that_needs_protecting = -1;
+  gtl::InlinedVector<TensorValue, 4> input_vector(op_inputs.size());
   for (int i = 0; i < op_inputs.size(); ++i) {
-    if (!op_inputs[i]->RefCountIsOne()) {
-      const Tensor* input_tensor = nullptr;
-      TF_RETURN_IF_ERROR(op_inputs[i]->Tensor(&input_tensor));
-      protected_tensors.push_back(*input_tensor);
+    TensorHandle* in = op_inputs[i];
+    TF_RETURN_IF_ERROR(in->TensorValue(&input_vector[i]));
+    if (first_index_that_needs_protecting < 0 && !in->RefCountIsOne()) {
+      first_index_that_needs_protecting = i;
     }
   }
 
-  gtl::InlinedVector<TensorValue, 4> input_vector(op_inputs.size());
-  for (int i = 0; i < op_inputs.size(); ++i) {
-    TF_RETURN_IF_ERROR(op_inputs[i]->TensorValue(&input_vector[i]));
+  TensorReferenceVector protected_tensors;
+  if (first_index_that_needs_protecting >= 0) {
+    for (int i = 0; i < op_inputs.size(); ++i) {
+      if (!op_inputs[i]->RefCountIsOne()) {
+        const Tensor* input_tensor = nullptr;
+        TF_RETURN_IF_ERROR(op_inputs[i]->Tensor(&input_tensor));
+        protected_tensors.emplace_back(TensorReference(*input_tensor));
+      }
+    }
   }
 
   // TODO(apassos) figure out how to record stats for ops which are a part of
@@ -974,15 +992,16 @@ Status EagerKernelExecute(EagerContext* ctx,
   // device. We don't call it now because it is an unneeded overhead (it
   // acquires a lock) and we can't recover from errors anyway.
   ScopedStepContainer* container = ctx->StepContainer();
+  Status s;
   if (container == nullptr) {
-    TF_RETURN_IF_ERROR(kernel->Run(input_vector, &outputs, maybe_stats,
-                                   maybe_step_stats, graph_collector,
-                                   cancellation_manager));
+    s = kernel->Run(input_vector, &outputs, cancellation_manager);
   } else {
-    TF_RETURN_IF_ERROR(kernel->Run(container, input_vector, &outputs,
-                                   maybe_stats, maybe_step_stats,
-                                   graph_collector, cancellation_manager));
+    s = kernel->Run(container, input_vector, &outputs, cancellation_manager);
   }
+  for (const auto& tensor_ref : protected_tensors) {
+    tensor_ref.Unref();
+  }
+  TF_RETURN_IF_ERROR(s);
   if (graph_collector != nullptr) {
     mutex_lock ml(*ctx->MetadataMu());
     {
@@ -1033,7 +1052,7 @@ Status LocalEagerCopyToDevice(TensorHandle* h, EagerContext* ctx,
   // Note that `h` may not be currently ready. However execution order will
   // make sure that `h` is ready before the copy is actually done.
   std::unique_ptr<EagerNode> node(new CopyToDeviceNode(h, *result, dstd, ctx));
-  Status s = executor->Async() ? executor->Add(std::move(node)) : node->Run();
+  Status s = executor->AddOrExecute(std::move(node));
   // Since the operation failed, we need to Unref any outputs that were
   // allocated.
   if (!s.ok()) {
@@ -1053,6 +1072,12 @@ Status EagerCopyToDevice(TensorHandle* h, EagerContext* ctx,
   bool sender_is_local = send_device->IsLocal();
 
   bool recver_is_local = device->IsLocal();
+
+  if (!executor->Async()) {
+    // In sync mode, always clear error to maintain the same behavior as before.
+    // TODO(b/141004939): Remove this.
+    executor->ClearError();
+  }
 
   if (sender_is_local && recver_is_local) {
     return LocalEagerCopyToDevice(h, ctx, executor, device, result);
@@ -1075,13 +1100,17 @@ Status EagerCopyToDevice(TensorHandle* h, EagerContext* ctx,
           /* op_device= */ device, /*resource_device=*/nullptr, h->dtype, ctx,
           result));
     } else {
-      eager::EagerClient* eager_client;
       uint64 context_id = ctx->GetContextId();
-      TF_RETURN_IF_ERROR(ctx->GetClient(device, &eager_client));
+      string remote_task;
+      if (!DeviceNameUtils::GetTaskName(device->parsed_name(), &remote_task)) {
+        return errors::InvalidArgument(
+            "Unable to find remote task corresponding to device ",
+            device->name());
+      }
       recv_op_id = ctx->RemoteMgr()->NextOpId();
       auto tensor_handle_data =
           absl::make_unique<UnshapedRemoteTensorHandleData>(
-              recv_op_id, 0, eager_client, context_id, ctx);
+              recv_op_id, 0, remote_task, context_id, ctx);
       if (mirror) {
         TF_RETURN_IF_ERROR(
             h->AddUnshapedRemoteMirror(std::move(tensor_handle_data), device));
@@ -1094,7 +1123,7 @@ Status EagerCopyToDevice(TensorHandle* h, EagerContext* ctx,
     }
     auto node = absl::make_unique<eager::RemoteCopyNode>(
         ctx, executor, h, result[0], device, recv_op_id);
-    Status s = executor->Async() ? executor->Add(std::move(node)) : node->Run();
+    Status s = executor->AddOrExecute(std::move(node));
     if (!s.ok()) {
       result[0]->Unref();
     }

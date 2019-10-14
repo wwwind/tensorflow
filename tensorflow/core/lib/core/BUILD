@@ -2,7 +2,13 @@ load("//tensorflow/core/platform:default/build_config.bzl", "tf_proto_library")
 
 package(
     default_visibility = [
-        "//tensorflow:__subpackages__",
+        "//tensorflow/core/lib/core:__pkg__",
+        "//tensorflow/core/lib/gtl:__pkg__",
+        "//tensorflow/core/lib/hash:__pkg__",
+        "//tensorflow/core/lib/io:__pkg__",
+        "//tensorflow/core/lib/random:__pkg__",
+        "//tensorflow/core/lib/strings:__pkg__",
+        "//tensorflow/core/platform:__pkg__",
     ],
     licenses = ["notice"],  # Apache 2.0
 )
@@ -91,6 +97,7 @@ cc_library(
     hdrs = ["status.h"],
     deps = [
         ":error_codes_proto_cc",
+        "//tensorflow/core:error_codes_proto_impl_cc",
         "//tensorflow/core/lib/strings:string_utils",
         "//tensorflow/core/platform:logging",
         "//tensorflow/core/platform:macros",
@@ -114,9 +121,7 @@ cc_library(
     name = "threadpool_interface",
     hdrs = ["threadpool_interface.h"],
     deps = [
-        "//tensorflow/core/platform:mutex",
-        "//tensorflow/core/platform:types",
-        "//third_party/eigen3",
+        "//tensorflow/core/platform:threadpool_interface",
     ],
 )
 
@@ -124,7 +129,7 @@ cc_library(
     name = "threadpool_options",
     hdrs = ["threadpool_options.h"],
     deps = [
-        ":threadpool_interface",
+        "//tensorflow/core/platform:threadpool_options",
     ],
 )
 
@@ -133,7 +138,11 @@ tf_proto_library(
     srcs = ["error_codes.proto"],
     cc_api_version = 2,
     make_default_target_header_only = True,
-    provide_cc_alias = True,
+    protodeps = [
+        "//tensorflow/core:error_codes_proto_impl",
+    ],
+    visibility = ["//tensorflow/core:__subpackages__"],
+    exports = ["//tensorflow/core:error_codes_proto_impl"],
 )
 
 filegroup(
@@ -165,7 +174,6 @@ filegroup(
         "bitmap.cc",
         "coding.cc",
         "status.cc",
-        "threadpool.cc",
     ],
     visibility = ["//tensorflow/core:__pkg__"],
 )

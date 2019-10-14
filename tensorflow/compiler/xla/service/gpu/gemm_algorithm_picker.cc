@@ -81,8 +81,8 @@ static StatusOr<absl::optional<se::blas::AlgorithmType>> DoUncachedGemmAutotune(
     // the bias parameter.
     if (backend_config.beta() != 0) {
       int64 rng_state = 0;
-      InitializeFloatBuffer(stream, gemm->shape().element_type(), &rng_state,
-                            output_buffer);
+      InitializeBuffer(stream, gemm->shape().element_type(), &rng_state,
+                       output_buffer);
     }
     se::blas::ProfileResult profile_result;
 
@@ -242,15 +242,8 @@ static StatusOr<bool> RunOnInstruction(HloInstruction* instr,
   if (allocator == nullptr) {
     allocator = executor->GetAllocator();
   }
-  absl::optional<se::Stream> stream_opt;
-  se::Stream* stream = [&]() {
-    if (allocator->GetStream()) {
-      return allocator->GetStream();
-    }
-    stream_opt.emplace(executor);
-    stream_opt->Init();
-    return &stream_opt.value();
-  }();
+  TF_ASSIGN_OR_RETURN(se::Stream* const stream,
+                      allocator->GetStream(executor->device_ordinal()));
 
   const HloModuleConfig& hlo_module_config = instr->GetModule()->config();
   se::RedzoneAllocator input_output_allocator(
@@ -264,8 +257,7 @@ static StatusOr<bool> RunOnInstruction(HloInstruction* instr,
     TF_ASSIGN_OR_RETURN(se::DeviceMemoryBase buffer,
                         input_output_allocator.AllocateBytes(
                             ShapeUtil::ByteSizeOf(op->shape())));
-    InitializeFloatBuffer(stream, op->shape().element_type(), &rng_state,
-                          buffer);
+    InitializeBuffer(stream, op->shape().element_type(), &rng_state, buffer);
     return buffer;
   };
 

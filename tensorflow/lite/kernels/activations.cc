@@ -30,6 +30,7 @@ limitations under the License.
 #include "tensorflow/lite/kernels/internal/reference/integer_ops/log_softmax.h"
 #include "tensorflow/lite/kernels/internal/reference/integer_ops/logistic.h"
 #include "tensorflow/lite/kernels/internal/reference/integer_ops/tanh.h"
+#include "tensorflow/lite/kernels/internal/reference/logistic.h"
 #include "tensorflow/lite/kernels/internal/reference/reference_ops.h"
 #include "tensorflow/lite/kernels/internal/tensor.h"
 #include "tensorflow/lite/kernels/internal/types.h"
@@ -64,6 +65,8 @@ struct SoftmaxOpData {
 struct LogSoftmaxOpData : public OpData {
   int32_t reverse_scaling_divisor = 0;
   int32_t reverse_scaling_right_shift = 0;
+  struct SoftmaxParams params = {};
+  float f_table[256];
 };
 
 struct LeakyReluOpData : public OpData {
@@ -126,6 +129,25 @@ void EvalUsingLookupTable(struct OpData* data, const TfLiteTensor* input,
   for (int i = 0; i < size; ++i) {
     *output_data++ = static_cast<T>(data->table_zero[*input_data++]);
   }
+}
+
+template <typename T>
+void QuantizedReluX(float act_min, float act_max, const TfLiteTensor* input,
+                    TfLiteTensor* output) {
+  ActivationParams params;
+  params.quantized_activation_min =
+      std::max(static_cast<int32_t>(std::numeric_limits<T>::min()),
+               output->params.zero_point +
+                   static_cast<int32>(roundf(act_min / output->params.scale)));
+  params.quantized_activation_max =
+      act_max == std::numeric_limits<float>::infinity()
+          ? static_cast<int32_t>(std::numeric_limits<T>::max())
+          : std::min(
+                static_cast<int32_t>(std::numeric_limits<T>::max()),
+                output->params.zero_point +
+                    static_cast<int32>(roundf(act_max / output->params.scale)));
+  optimized_ops::ReluX(params, GetTensorShape(input), GetTensorData<T>(input),
+                       GetTensorShape(output), GetTensorData<T>(output));
 }
 
 }  // namespace
@@ -468,23 +490,28 @@ TfLiteStatus LogSoftmaxPrepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_EQ(context, input->type, output->type);
 
   if (input->type == kTfLiteUInt8 || input->type == kTfLiteInt8) {
+    TF_LITE_ENSURE_EQ(context, output->params.scale, 16.0 / 256);
+    static const double kBeta = 1.0;
     if (input->type == kTfLiteUInt8) {
       TF_LITE_ENSURE_EQ(context, output->params.zero_point, 255);
+      data->params.table = data->f_table;
+      optimized_ops::PopulateSoftmaxLookupTable(&data->params,
+                                                input->params.scale, kBeta);
+      data->params.zero_point = output->params.zero_point;
+      data->params.scale = output->params.scale;
     }
     if (input->type == kTfLiteInt8) {
       TF_LITE_ENSURE_EQ(context, output->params.zero_point, 127);
+      static const int kScaledDiffIntegerBits = 5;
+      tflite::PreprocessLogSoftmaxScalingExp(
+          kBeta, input->params.scale, kScaledDiffIntegerBits,
+          &data->input_multiplier, &data->input_left_shift,
+          &data->reverse_scaling_divisor, &data->reverse_scaling_right_shift);
+      data->reverse_scaling_right_shift *= -1;
+      data->diff_min =
+          -1.0 * tflite::CalculateInputRadius(kScaledDiffIntegerBits,
+                                              data->input_left_shift);
     }
-    TF_LITE_ENSURE_EQ(context, output->params.scale, 16.0 / 256);
-
-    static const double kBeta = 1.0;
-    static const int kScaledDiffIntegerBits = 5;
-    tflite::PreprocessLogSoftmaxScalingExp(
-        kBeta, input->params.scale, kScaledDiffIntegerBits,
-        &data->input_multiplier, &data->input_left_shift,
-        &data->reverse_scaling_divisor, &data->reverse_scaling_right_shift);
-    data->reverse_scaling_right_shift *= -1;
-    data->diff_min = -1.0 * tflite::CalculateInputRadius(
-                                kScaledDiffIntegerBits, data->input_left_shift);
   }
 
   return context->ResizeTensor(context, output,
@@ -531,41 +558,25 @@ TfLiteStatus ReluEval(TfLiteContext* context, TfLiteNode* node) {
     case kTfLiteFloat32: {
       optimized_ops::Relu(GetTensorShape(input), GetTensorData<float>(input),
                           GetTensorShape(output), GetTensorData<float>(output));
-      return kTfLiteOk;
+    } break;
+    // TODO(renjieliu): We may revisit the quantization calculation logic,
+    // the unbounded upper limit is actually hard to quantize.
+    case kTfLiteUInt8: {
+      QuantizedReluX<uint8_t>(0.0f, std::numeric_limits<float>::infinity(),
+                              input, output);
+    } break;
+    case kTfLiteInt8: {
+      QuantizedReluX<int8_t>(0.0f, std::numeric_limits<float>::infinity(),
+                             input, output);
     } break;
     default:
-      context->ReportError(context,
-                           "Only float32 is supported currently, got %s.",
-                           TfLiteTypeGetName(input->type));
+      context->ReportError(
+          context, "Only float32 & int8/uint8 is supported currently, got %s.",
+          TfLiteTypeGetName(input->type));
       return kTfLiteError;
   }
+  return kTfLiteOk;
 }
-
-namespace {
-template <typename T>
-void QuantizedRelu1(const TfLiteTensor* input, TfLiteTensor* output) {
-  ActivationParams params;
-  int32 kMin = -1;
-  int32 kMax = 1;
-  params.activation_type = FusedActivationFunctionType::kRelu1;
-
-  // Relu1 has a min range of -1, we need to quantize this
-  params.quantized_activation_min =
-      std::max(static_cast<int32_t>(std::numeric_limits<T>::min()),
-               output->params.zero_point +
-                   static_cast<int32>(roundf(kMin / output->params.scale)));
-
-  // Relu1 has a max range of 1, we need to quantize this
-  params.quantized_activation_max =
-      std::min(static_cast<int32_t>(std::numeric_limits<T>::max()),
-               output->params.zero_point +
-                   static_cast<int32>(roundf(kMax / output->params.scale)));
-
-  // Reused the optimized function written for ReluX
-  optimized_ops::ReluX(params, GetTensorShape(input), GetTensorData<T>(input),
-                       GetTensorShape(output), GetTensorData<T>(output));
-}
-}  // namespace
 
 TfLiteStatus Relu1Eval(TfLiteContext* context, TfLiteNode* node) {
   const TfLiteTensor* input = GetInput(context, node, 0);
@@ -578,11 +589,11 @@ TfLiteStatus Relu1Eval(TfLiteContext* context, TfLiteNode* node) {
       return kTfLiteOk;
     } break;
     case kTfLiteUInt8: {
-      QuantizedRelu1<uint8_t>(input, output);
+      QuantizedReluX<uint8_t>(-1.0f, 1.0f, input, output);
       return kTfLiteOk;
     } break;
     case kTfLiteInt8: {
-      QuantizedRelu1<int8_t>(input, output);
+      QuantizedReluX<int8_t>(-1, 1, input, output);
       return kTfLiteOk;
     } break;
     default:
@@ -648,24 +659,6 @@ TfLiteStatus HardSwishEval(TfLiteContext* context, TfLiteNode* node) {
   }
 }
 
-namespace {
-template <typename T>
-void QuantizedRelu6(const TfLiteTensor* input, TfLiteTensor* output) {
-  ActivationParams params;
-  params.activation_type = FusedActivationFunctionType::kRelu6;
-  params.quantized_activation_min =
-      std::max(static_cast<int32_t>(std::numeric_limits<T>::min()),
-               output->params.zero_point +
-                   static_cast<int32>(roundf(0.f / output->params.scale)));
-  params.quantized_activation_max =
-      std::min(static_cast<int32_t>(std::numeric_limits<T>::max()),
-               output->params.zero_point +
-                   static_cast<int32>(roundf(6.f / output->params.scale)));
-  optimized_ops::ReluX(params, GetTensorShape(input), GetTensorData<T>(input),
-                       GetTensorShape(output), GetTensorData<T>(output));
-}
-}  // namespace
-
 TfLiteStatus Relu6Eval(TfLiteContext* context, TfLiteNode* node) {
   const TfLiteTensor* input = GetInput(context, node, 0);
   TfLiteTensor* output = GetOutput(context, node, 0);
@@ -679,10 +672,10 @@ TfLiteStatus Relu6Eval(TfLiteContext* context, TfLiteNode* node) {
       return kTfLiteOk;
     } break;
     case kTfLiteUInt8:
-      QuantizedRelu6<uint8_t>(input, output);
+      QuantizedReluX<uint8_t>(0.0f, 6.0f, input, output);
       return kTfLiteOk;
     case kTfLiteInt8: {
-      QuantizedRelu6<int8_t>(input, output);
+      QuantizedReluX<int8_t>(0.0f, 6.0f, input, output);
       return kTfLiteOk;
     } break;
     default:
@@ -926,16 +919,12 @@ TfLiteStatus LogSoftmaxEval(TfLiteContext* context, TfLiteNode* node) {
       return kTfLiteOk;
     }
     case kTfLiteUInt8: {
-      SoftmaxParams op_params;
-      op_params.input_multiplier = data->input_multiplier;
-      op_params.input_left_shift = data->input_left_shift;
-      op_params.reverse_scaling_divisor = data->reverse_scaling_divisor;
-      op_params.reverse_scaling_right_shift = data->reverse_scaling_right_shift;
-      op_params.diff_min = data->diff_min;
+      SoftmaxParams op_params = data->params;
       if (kernel_type == kGenericOptimized) {
         optimized_ops::LogSoftmax(
-            op_params, GetTensorShape(input), GetTensorData<uint8_t>(input),
-            GetTensorShape(output), GetTensorData<uint8_t>(output));
+            op_params, input->params.scale, GetTensorShape(input),
+            GetTensorData<uint8_t>(input), GetTensorShape(output),
+            GetTensorData<uint8_t>(output));
       } else {
         reference_ops::LogSoftmax(
             op_params, GetTensorShape(input), GetTensorData<uint8_t>(input),

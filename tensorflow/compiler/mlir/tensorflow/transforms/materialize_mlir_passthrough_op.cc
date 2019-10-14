@@ -42,7 +42,7 @@ class MaterializePassthroughOpPass
 
 void MaterializePassthroughOpPass::runOnFunction() {
   getFunction().walk([](Operation *op) {
-    auto passthrough_op = dyn_cast<TF::MlirPassthroughOpOp>(op);
+    auto passthrough_op = dyn_cast<TF::MlirPassthroughOp>(op);
     if (!passthrough_op) return;
     std::string module_string = passthrough_op.mlir_module();
     // Parse the module.
@@ -96,7 +96,7 @@ void MaterializePassthroughOpPass::runOnFunction() {
 }  // namespace
 
 namespace TF {
-std::unique_ptr<FunctionPassBase> CreateMaterializePassthroughOpPass() {
+std::unique_ptr<OpPassBase<FuncOp>> CreateMaterializePassthroughOpPass() {
   return std::make_unique<MaterializePassthroughOpPass>();
 }
 }  // namespace TF

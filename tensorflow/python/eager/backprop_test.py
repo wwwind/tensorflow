@@ -48,7 +48,6 @@ from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import random_ops
 from tensorflow.python.ops import resource_variable_ops
 from tensorflow.python.ops import variable_scope
-from tensorflow.python.ops.signal import fft_ops
 from tensorflow.python.ops import variables
 from tensorflow.python.training import training
 from tensorflow.python.util import nest
@@ -1579,23 +1578,34 @@ class BackpropTest(test.TestCase, parameterized.TestCase):
     with self.assertRaisesRegexp(ValueError, 'ndarray'):
       g.watch(np.array(1.))
 
-  def testOpWithNoAttrs(self):
+  def testWatchedVariablesAfterNonPersistentGradientCall(self):
+    with backprop.GradientTape(persistent=False) as tape:
+      x = resource_variable_ops.ResourceVariable(1.0)
+      tape.watch(x)
+    tape.gradient(x, x)
+    self.assertEqual((x,), tape.watched_variables())
 
-    @function.defun(autograph=False)
-    def f():
-      with backprop.GradientTape() as tape:
-        xs = random_ops.random_normal([10, 32])
-        tape.watch(xs)
-        # The `rfft()` op has no defined attrs, which exercises a different
-        # branch in the Python op wrapper code generator for recording
-        # gradients.
-        ys = fft_ops.rfft(xs)
-        self.assertEmpty(ys.op.node_def.attr)
-      gs = tape.gradient(ys, xs)
-      self.assertIsNotNone(gs)
+  def testWatchedVariablesOnlyHasVariablesFromLastTape(self):
+    with backprop.GradientTape(persistent=False) as tape:
+      x = resource_variable_ops.ResourceVariable(1.0)
+      tape.watch(x)
+    with backprop.GradientTape(persistent=False) as tape:
+      z = resource_variable_ops.ResourceVariable(2.0)
+      tape.watch(z)
+    tape.gradient(z, z)
+    self.assertEqual((z,), tape.watched_variables())
 
-    f.get_concrete_function()
-
+  def testWatchedVariablesRespectReset(self):
+    with backprop.GradientTape(persistent=False) as tape:
+      x = resource_variable_ops.ResourceVariable(1.0)
+      tape.watch(x)
+      self.assertEqual((x,), tape.watched_variables())
+      tape.reset()
+      z = resource_variable_ops.ResourceVariable(2.0)
+      tape.watch(z)
+      self.assertEqual((z,), tape.watched_variables())
+    tape.gradient(z, z)
+    self.assertEqual((z,), tape.watched_variables())
 
 class JacobianTest(test.TestCase):
 

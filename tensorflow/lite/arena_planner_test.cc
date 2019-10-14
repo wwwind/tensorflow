@@ -198,7 +198,7 @@ class ArenaPlannerTest : public ::testing::Test {
       offset += kTensorAlignment - offset % kTensorAlignment;
     }
     return offset;
-  };
+  }
 
   TfLiteContext context_;
   TestGraph* graph_;

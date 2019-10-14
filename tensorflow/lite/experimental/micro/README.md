@@ -54,14 +54,18 @@ The following examples are available:
   * Colab walkthrough of model training and conversion
 
 - [micro_speech](https://github.com/tensorflow/tensorflow/tree/master/tensorflow/lite/experimental/micro/examples/micro_speech)
-  * Uses a 20kb model to recognize keywords in spoken audio
+  * Uses a 20 KB model to recognize keywords in spoken audio
   * Application code for Arduino, SparkFun Edge, and STM32F746
   * Python scripts for model training and conversion
 
-- [micro_vision](https://github.com/tensorflow/tensorflow/tree/master/tensorflow/lite/experimental/micro/examples/micro_vision)
-  * Uses a 250kb model to recognize presence or absence of a person in images
+- [person_detection](https://github.com/tensorflow/tensorflow/tree/master/tensorflow/lite/experimental/micro/examples/person_detection)
+  * Uses a 250 KB model to recognize presence or absence of a person in images
     captured by a camera
   * Application code for SparkFun Edge
+
+- [magic_wand](https://github.com/tensorflow/tensorflow/tree/master/tensorflow/lite/experimental/micro/examples/magic_wand)
+  * Uses a 20 KB model to recognize gestures using accelerometer data
+  * Application code for Arduino and SparkFun Edge
 
 ## Pre-generated Project Files
 
@@ -568,23 +572,18 @@ It's possible to use the Arduino Desktop IDE to build TFL Micro targets for
 Arduino devices. The source code is packaged as a .zip archive that you can add
 in the IDE by going to Sketch->Include Library->Add .ZIP Library... Once you've
 added the library, you can then go to File->Examples->TensorFlowLite to find a
-simple sketch that you can use to build the example.
+simple sketches that you can use to build the examples.
 
 You can generate the zip file from the source code here in git by running the
 following command:
 
 ```
-make -f tensorflow/lite/experimental/micro/tools/make/Makefile TARGET=arduino TAGS="" generate_micro_speech_mock_arduino_library_zip
+https://github.com/tensorflow/tensorflow/blob/master/tensorflow/lite/experimental/micro/tools/ci_build/test_arduino.sh
 ```
 
-The resulting library can be found in `tensorflow/lite/experimental/micro/tools/make/gen/arduino_x86_64/prj/micro_speech_mock/micro_speech_mock.zip`.
-This generates a library that builds the `micro_speech_mock` binary, but you can
-do the same for any other target by replacing the name in the make command line.
-If you want to build all the possible libraries, you can run this command:
-
-```
-make -f tensorflow/lite/experimental/micro/tools/make/Makefile TARGET=arduino TAGS="" generate_projects
-```
+The resulting library can be found in `tensorflow/lite/experimental/micro/tools/make/gen/arduino_x86_64/prj/tensorflow_lite.zip`.
+This generates a library that includes all of the examples as sketches, along
+with the framework code you need to run your own examples.
 
 ## How to Port TensorFlow Lite Micro to a New Platform
 

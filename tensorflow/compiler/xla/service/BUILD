@@ -51,6 +51,12 @@ xla_proto_library(
     srcs = ["hlo_profile_printer_data.proto"],
 )
 
+xla_proto_library(
+    name = "hlo_execution_profile_data",
+    srcs = ["hlo_execution_profile_data.proto"],
+    deps = [":hlo_profile_printer_data"],
+)
+
 # Filegroup used to collect source files for dependency checking.
 filegroup(
     name = "c_srcs",
@@ -1782,7 +1788,6 @@ cc_library(
         "//tensorflow/compiler/xla:window_util",
         "//tensorflow/compiler/xla:xla_data_proto",
         "//tensorflow/core:lib",
-        "//tensorflow/core/lib/core:bits",
         "//tensorflow/core/platform:logging",
         "//tensorflow/core/platform:types",
         "//tensorflow/stream_executor/lib",
@@ -2276,6 +2281,7 @@ cc_library(
     hdrs = ["dynamic_padder.h"],
     deps = [
         ":dynamic_dimension_inference",
+        ":hlo",
         ":hlo_dce",
         ":hlo_pass",
         "//tensorflow/compiler/xla:literal",
@@ -2287,15 +2293,17 @@ cc_library(
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/strings:str_format",
     ],
 )
 
-tf_cc_test(
+xla_test(
     name = "dynamic_padder_test",
     srcs = ["dynamic_padder_test.cc"],
     deps = [
         ":dynamic_padder",
         ":hlo",
+        ":hlo_get_dimension_size_rewriter",
         ":hlo_matchers",
         ":hlo_parser",
         ":hlo_runner",
@@ -2307,7 +2315,9 @@ tf_cc_test(
         "//tensorflow/compiler/xla:test_helpers",
         "//tensorflow/compiler/xla:xla_data_proto",
         "//tensorflow/compiler/xla/client:xla_builder",
+        "//tensorflow/compiler/xla/tests:client_library_test_base",
         "//tensorflow/compiler/xla/tests:hlo_test_base",
+        "//tensorflow/compiler/xla/tests:literal_test_util",
         "//tensorflow/core:test",
     ],
 )
@@ -2461,6 +2471,7 @@ cc_library(
     deps = [
         ":hlo",
         ":hlo_cost_analysis",
+        ":hlo_execution_profile_data",
         ":hlo_profile_printer",
         ":human_readable_profile_builder",
         "//tensorflow/compiler/xla:types",
@@ -2878,6 +2889,7 @@ cc_library(
         ":call_graph",
         ":computation_layout",
         ":hlo",
+        ":hlo_alias_analysis",
         ":hlo_casting_utils",
         ":hlo_dce",
         ":hlo_graph_dumper",
