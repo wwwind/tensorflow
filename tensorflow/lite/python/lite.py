@@ -82,6 +82,7 @@ from tensorflow.python.saved_model.load import load as _load
 from tensorflow.python.saved_model.loader_impl import parse_saved_model_with_debug_info as _parse_saved_model_with_debug_info
 from tensorflow.python.util import deprecation as _deprecation
 from tensorflow.python.util.tf_export import tf_export as _tf_export
+from tensorflow.lite.toco import types_pb2 as _types_pb2
 
 
 # The default value of `experimental_new_converter`.
@@ -374,7 +375,10 @@ class TFLiteConverterBase(object):
     if self._experimental_calibrate_only:
       return calibrated
     elif self._experimental_new_quantizer:
-      return _mlir_quantize(calibrated)
+      inference_type = _types_pb2.INT8
+      if activations_type == constants.INT16:
+        inference_type = _types_pb2.QUANTIZED_INT16
+      return _mlir_quantize(calibrated, False, inference_type)
     else:
       return calibrate_quantize.calibrate_and_quantize(
         self.representative_dataset.input_gen, inference_input_type,
